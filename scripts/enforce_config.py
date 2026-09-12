@@ -122,7 +122,7 @@ def _has_non_ascii(path):
     raw UTF-8 and is unreadable by Nighty's cp1252 reader)."""
     try:
         with open(path, "rb") as f:
-            return any(b > 127 for b in f.read())
+            return not f.read().isascii()
     except OSError:
         return False
 
@@ -161,6 +161,15 @@ def enforce_notifications(appdata):
         _save(path, d)
         return "updated (toast+sound disabled)"
     return "ok (already disabled)"
+
+
+def _backup_differs_from_source(source_path, backup_path):
+    try:
+        if not os.path.exists(backup_path):
+            return True
+        return os.path.getsize(backup_path) != os.path.getsize(source_path)
+    except OSError:
+        return True
 
 
 def enforce_web(appdata):
@@ -220,10 +229,12 @@ def enforce_web(appdata):
         msgs.append("web already true")
 
     if isinstance(nc, dict) and nc:
-        try:
-            shutil.copyfile(nc_path, os.path.join(appdata, "nighty.config.bak"))
-        except Exception:
-            pass
+        backup_path = os.path.join(appdata, "nighty.config.bak")
+        if _backup_differs_from_source(nc_path, backup_path):
+            try:
+                shutil.copyfile(nc_path, backup_path)
+            except Exception:
+                pass
 
     return "; ".join(msgs)
 
@@ -474,6 +485,34 @@ def _is_mei_in_use(mei_name):
     return False
 
 
+MIRROR_BOUNDARY_CHECK_BYTES = 4096
+
+
+def _mirror_continues_source(src, dst, mirror_size):
+    if mirror_size == 0:
+        return True
+    window = min(MIRROR_BOUNDARY_CHECK_BYTES, mirror_size)
+    offset = mirror_size - window
+    with open(src, "rb") as source, open(dst, "rb") as mirror:
+        source.seek(offset)
+        mirror.seek(offset)
+        return source.read(window) == mirror.read(window)
+
+
+def _mirror_appended_tail(src, dst):
+    source_size = os.path.getsize(src)
+    mirror_size = os.path.getsize(dst) if os.path.exists(dst) else 0
+    source_was_truncated = source_size < mirror_size
+    if source_was_truncated or not _mirror_continues_source(src, dst, mirror_size):
+        shutil.copyfile(src, dst)
+        return
+    if source_size == mirror_size:
+        return
+    with open(src, "rb") as source, open(dst, "ab") as mirror:
+        source.seek(mirror_size)
+        shutil.copyfileobj(source, mirror)
+
+
 def sync_nighty_log(appdata, diag_dir=None):
     """Ensure AppData/nighty.log is mirrored / copied to the diagnostics directory."""
     if not appdata:
@@ -490,10 +529,7 @@ def sync_nighty_log(appdata, diag_dir=None):
         os.makedirs(diag_dir, exist_ok=True)
         dst = os.path.join(diag_dir, "nighty.log")
         try:
-            src_sz = os.path.getsize(src)
-            dst_sz = os.path.getsize(dst) if os.path.exists(dst) else -1
-            if src_sz != dst_sz:
-                shutil.copyfile(src, dst)
+            _mirror_appended_tail(src, dst)
         except OSError:
             pass
     except Exception:

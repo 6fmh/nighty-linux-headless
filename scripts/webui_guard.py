@@ -44,9 +44,12 @@ def main():
     # enforcement fast (interval) but poll the stub far less often (rp_interval),
     # cutting main-thread contention ~6x with no loss of auto-start protection.
     rp_interval = float(os.environ.get("RP_GUARD_INTERVAL", "30"))
+    rotate_interval = float(os.environ.get("ROTATE_INTERVAL", "900"))
     print(f"[guard] Web UI hard-enforcement active (every {interval}s; "
-          f"RP in-memory guard every {rp_interval}s)")
+          f"RP in-memory guard every {rp_interval}s; "
+          f"log rotation every {rotate_interval}s)")
     last_rp = 0.0
+    last_rotate = time.time()
     while True:
         try:
             appdata = ec.find_appdata()
@@ -61,6 +64,9 @@ def main():
             if now - last_rp >= rp_interval:
                 ec.stop_unsafe_running_profile()
                 last_rp = now
+            if appdata and now - last_rotate >= rotate_interval:
+                ec.rotate_and_clean_logs(appdata)
+                last_rotate = now
         except Exception as e:
             print("[guard] error:", repr(e))
         time.sleep(interval)
