@@ -104,5 +104,31 @@ class EnforceConfigTests(unittest.TestCase):
             self.assertIn(b"[truncated log rotation]", header)
 
 
+    def test_rotation_never_touches_the_backend_owned_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            appdata = os.path.join(tmp, "Nighty Selfbot")
+            os.makedirs(appdata, exist_ok=True)
+            os.environ["NIGHTY_HOME"] = tmp
+            os.environ["NIGHTY_DIAG_DIR"] = os.path.join(tmp, "diagnostics")
+
+            owned = os.path.join(appdata, "nighty.log")
+            with open(owned, "wb") as f:
+                f.write(b"L" * (12 * 1024 * 1024))
+
+            writer = open(owned, "r+b")
+            writer.seek(0, os.SEEK_END)
+
+            enforce_config.rotate_and_clean_logs(appdata)
+
+            writer.write(b"REAL LOG LINE\n")
+            writer.flush()
+            writer.close()
+
+            with open(owned, "rb") as f:
+                data = f.read()
+            self.assertNotIn(b"\x00\x00\x00\x00", data)
+            self.assertIn(b"REAL LOG LINE", data)
+
+
 if __name__ == "__main__":
     unittest.main()

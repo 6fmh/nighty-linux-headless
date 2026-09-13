@@ -556,13 +556,15 @@ def rotate_and_clean_logs(appdata):
     max_bytes = 10 * 1024 * 1024  # 10 MB
     keep_bytes = 2 * 1024 * 1024  # 2 MB
 
-    search_dirs = list(dict.fromkeys([root_diag, home_diag, nighty_home, os.path.join(appdata, "diagnostics"), appdata]))
+    mirrored_names = {"nighty.log"}
+
+    search_dirs = list(dict.fromkeys([root_diag, home_diag, nighty_home]))
     for sdir in search_dirs:
         if not sdir or not os.path.isdir(sdir):
             continue
         try:
             for f in os.listdir(sdir):
-                if f.endswith(".log"):
+                if f.endswith(".log") and f not in mirrored_names:
                     p = os.path.join(sdir, f)
                     try:
                         sz = os.path.getsize(p)
