@@ -471,8 +471,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "wine":
         return check_wine(args.path)
     if args.command == "diag":
-        code, _ = check_network(args.quiet)
-        return code
+        return check_network(args.quiet)
     if args.command == "report":
         return generate_report(args.diag_dir, args.outfile, args.quiet)
     return 2
