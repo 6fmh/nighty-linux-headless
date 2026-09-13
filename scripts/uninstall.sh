@@ -31,7 +31,8 @@ warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
 need() { command -v "$1" >/dev/null 2>&1; }
 
 # Learn the real runtime locations from .env (falling back to defaults).
-if [ -f "$HERE/.env" ]; then set -a; . "$HERE/.env"; set +a; fi
+. "$HERE/scripts/env_file.sh"
+nighty_load_env_file "$HERE/.env"
 : "${NIGHTY_HOME:=$HOME/.local/share/nighty}"
 : "${WINEPREFIX:=$NIGHTY_HOME/prefix}"
 : "${NIGHTY_STUB:=$HERE/Nighty_stub.exe}"

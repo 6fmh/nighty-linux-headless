@@ -124,7 +124,8 @@ if [ ! -f .env ]; then
 else
   ok ".env already exists (keeping your settings)"
 fi
-set -a; . ./.env; set +a
+. "$HERE/scripts/env_file.sh"
+nighty_load_env_file ./.env
 
 # ── 1) base tooling ──────────────────────────────────────────────────────────
 info "Checking base tools…"

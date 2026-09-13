@@ -17,7 +17,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/scripts/wine_command.sh"
 
 # ── load .env ────────────────────────────────────────────────────────────────
-set -a; [ -f "$HERE/.env" ] && . "$HERE/.env"; set +a
+. "$HERE/scripts/env_file.sh"
+nighty_load_env_file "$HERE/.env"
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 : "${NIGHTY_HOME:=$HOME/.local/share/nighty}"
