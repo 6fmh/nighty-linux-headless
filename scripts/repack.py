@@ -252,6 +252,8 @@ def compile_blob(name, src):
 def main():
     if not os.path.isfile(SRC):
         sys.exit("ERROR: source binary not found: %s (drop your Nighty.exe there)" % SRC)
+    if os.path.abspath(OUT) == os.path.abspath(SRC):
+        sys.exit("ERROR: output path must differ from the source path (%s) — refusing to overwrite your licensed binary." % SRC)
     if sys.version_info[:2] != (3, 8):
         print("WARNING: not running under Python 3.8 (got %d.%d). The marshal format"
               " must match the frozen runtime; use the uv-provided 3.8 interpreter."
@@ -271,10 +273,14 @@ def main():
     off = 0
     while off < len(toc):
         elen, epos, dlen, ulen, cflag, tc = ENTRY.unpack_from(toc, off)
+        if elen < ENTRY.size or off + elen > len(toc):
+            sys.exit("ERROR: corrupt CArchive TOC entry at offset %d (elen=%d) — is this a Nighty one-file exe?" % (off, elen))
         name = toc[off+ENTRY.size:off+elen].rstrip(b'\0').decode('utf-8','replace')
         entries.append([name, tc, cflag, epos, dlen, ulen])
         off += elen
-    pyz = next(e for e in entries if e[1] == b'z')
+    pyz = next((e for e in entries if e[1] == b'z'), None)
+    if pyz is None:
+        sys.exit("ERROR: no PYZ entry found in the CArchive — is this a Nighty one-file exe?")
     praw = data[ps+pyz[3]:ps+pyz[3]+pyz[4]]
     assert praw[:4] == b'PYZ\0'
     pymagic = praw[4:8]
@@ -324,7 +330,15 @@ def main():
     assert len(cookie) == 88
     newpkg += tocbuf + cookie
     out = data[:ps] + bytes(newpkg)
-    open(OUT, "wb").write(out)
+    missing = sorted(set(REPLACE_SRC) - {n for n, _, _ in replaced})
+    if missing:
+        sys.exit("ERROR: no PYZ entry matched %s — refusing to write a stub that still needs a GUI." % missing)
+    tmp_out = OUT + ".tmp"
+    with open(tmp_out, "wb") as fh:
+        fh.write(out)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_out, OUT)
     print("wrote %s : %d bytes (orig %d)" % (OUT, len(out), total))
 
 if __name__ == "__main__":
