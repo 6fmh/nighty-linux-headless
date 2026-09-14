@@ -18,6 +18,53 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFLIGHT="$HERE/scripts/preflight.py"
+
+RP_BLACKHOLE_IP="192.0.2.1"
+RP_BLACKHOLE_IP_RE="192\.0\.2\.1"
+RP_BLACKHOLE_HOSTS=(lrclib.net api.lrclib.net api.spotify.com)
+RP_BLACKHOLE_UNIT="/etc/systemd/system/nighty-rp-blackhole.service"
+
+blackhole_route_present() {
+  ip route show "$RP_BLACKHOLE_IP" 2>/dev/null | grep -q unreachable
+}
+
+install_blackhole_route() {
+  if ! command -v ip >/dev/null 2>&1; then
+    warn "iproute2 not found — cannot install the unreachable route for $RP_BLACKHOLE_IP."
+    warn "Without it a blackholed request leaves the host and hangs until timeout."
+    return 1
+  fi
+  $SUDO ip route replace unreachable "$RP_BLACKHOLE_IP" >/dev/null 2>&1 || {
+    warn "could not add the unreachable route for $RP_BLACKHOLE_IP (needs root)."
+    return 1
+  }
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "systemd not present — the unreachable route is active now but will not survive a reboot."
+    warn "Add this to your init system or network hooks:  ip route replace unreachable $RP_BLACKHOLE_IP"
+    return 0
+  fi
+  $SUDO tee "$RP_BLACKHOLE_UNIT" >/dev/null <<UNIT
+[Unit]
+Description=Unreachable route for the nighty RP-fetch blackhole
+After=network-pre.target
+Wants=network-pre.target
+Before=nighty.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'exec ip route replace unreachable $RP_BLACKHOLE_IP'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+  $SUDO systemctl enable --now nighty-rp-blackhole.service >/dev/null 2>&1 || {
+    warn "could not enable nighty-rp-blackhole.service; the route is active but will not persist."
+    return 1
+  }
+  return 0
+}
 cd "$HERE"
 
 # ── pretty output ────────────────────────────────────────────────────────────
@@ -357,22 +404,35 @@ else
       printf '\n# nighty-linux-headless: RP-fetch blackhole (lyrics/now-playing fetches freeze the bot under emulation)\n' \
         | $SUDO tee -a "$hosts_file" >/dev/null 2>&1 || hosts_failed=1
     fi
-    for host in lrclib.net api.lrclib.net api.spotify.com; do
-      if ! grep -Eq "^[[:space:]]*0\\.0\\.0\\.0[[:space:]]+$host([[:space:]]|$)" "$hosts_file" 2>/dev/null; then
-        printf '0.0.0.0 %s\n' "$host" | $SUDO tee -a "$hosts_file" >/dev/null 2>&1 || hosts_failed=1
+    for host in "${RP_BLACKHOLE_HOSTS[@]}"; do
+      host_re="$(printf '%s' "$host" | sed 's/\./\\./g')"
+      if grep -Eq "^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+$host_re([[:space:]]|$)" "$hosts_file" 2>/dev/null; then
+        info "replacing a loopback-mapped blackhole entry for $host in $hosts_file"
+        $SUDO sed -i -E "/^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1)[[:space:]]+$host_re([[:space:]]|\$)/d" \
+          "$hosts_file" >/dev/null 2>&1 || hosts_failed=1
+      fi
+      if ! grep -Eq "^[[:space:]]*$RP_BLACKHOLE_IP_RE[[:space:]]+$host_re([[:space:]]|$)" "$hosts_file" 2>/dev/null; then
+        printf '%s %s\n' "$RP_BLACKHOLE_IP" "$host" | $SUDO tee -a "$hosts_file" >/dev/null 2>&1 || hosts_failed=1
       fi
     done
   done
-  if [ "$hosts_failed" -eq 0 ] \
-     && grep -Eq '^[[:space:]]*0\.0\.0\.0[[:space:]]+lrclib\.net([[:space:]]|$)' /etc/hosts \
-     && grep -Eq '^[[:space:]]*0\.0\.0\.0[[:space:]]+api\.lrclib\.net([[:space:]]|$)' /etc/hosts \
-     && grep -Eq '^[[:space:]]*0\.0\.0\.0[[:space:]]+api\.spotify\.com([[:space:]]|$)' /etc/hosts; then
-    ok "lrclib.net + api.spotify.com blackholed in /etc/hosts"
+
+  install_blackhole_route || hosts_failed=1
+
+  hosts_verified=1
+  for host in "${RP_BLACKHOLE_HOSTS[@]}"; do
+    host_re="$(printf '%s' "$host" | sed 's/\./\\./g')"
+    grep -Eq "^[[:space:]]*$RP_BLACKHOLE_IP_RE[[:space:]]+$host_re([[:space:]]|$)" /etc/hosts || hosts_verified=0
+  done
+  if [ "$hosts_failed" -eq 0 ] && [ "$hosts_verified" -eq 1 ]; then
+    ok "lrclib.net + api.spotify.com blackholed to $RP_BLACKHOLE_IP in /etc/hosts"
   else
     warn "could not fully update /etc/hosts — add the missing lines manually (needs root):"
-    warn "    0.0.0.0 lrclib.net"
-    warn "    0.0.0.0 api.lrclib.net"
-    warn "    0.0.0.0 api.spotify.com"
+    for host in "${RP_BLACKHOLE_HOSTS[@]}"; do
+      warn "    $RP_BLACKHOLE_IP $host"
+    done
+    warn "  and the matching unreachable route:"
+    warn "    ip route replace unreachable $RP_BLACKHOLE_IP"
   fi
 fi
 

@@ -98,8 +98,18 @@ full_uninstall() {
   # remove the RP-fetch blackhole install.sh added to /etc/hosts (handles the
   # older "lrclib blackhole" marker too, for installs made before it was renamed).
   if grep -qE "nighty-linux-headless: (lrclib|RP-fetch) blackhole" /etc/hosts 2>/dev/null; then
-    $SUDO sed -i '/nighty-linux-headless: \(lrclib\|RP-fetch\) blackhole/d;/^0\.0\.0\.0 lrclib\.net$/d;/^0\.0\.0\.0 api\.lrclib\.net$/d;/^0\.0\.0\.0 api\.spotify\.com$/d' /etc/hosts \
+    $SUDO sed -i -E '/nighty-linux-headless: (lrclib|RP-fetch) blackhole/d;/^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1|192\.0\.2\.1)[[:space:]]+(api\.)?lrclib\.net[[:space:]]*$/d;/^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1|192\.0\.2\.1)[[:space:]]+api\.spotify\.com[[:space:]]*$/d' /etc/hosts \
       && ok "removed RP-fetch blackhole from /etc/hosts"
+  fi
+  if [ -f /etc/systemd/system/nighty-rp-blackhole.service ]; then
+    $SUDO systemctl disable --now nighty-rp-blackhole.service >/dev/null 2>&1 || true
+    $SUDO rm -f /etc/systemd/system/nighty-rp-blackhole.service
+    $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "removed nighty-rp-blackhole.service"
+  fi
+  if command -v ip >/dev/null 2>&1 && ip route show 192.0.2.1 2>/dev/null | grep -q unreachable; then
+    $SUDO ip route del unreachable 192.0.2.1 >/dev/null 2>&1 \
+      && ok "removed the RP-fetch blackhole route"
   fi
 
   echo

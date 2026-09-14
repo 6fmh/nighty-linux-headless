@@ -431,9 +431,13 @@ run_stack() {
     x86_64|amd64) : ;;
     *)
       log "Box64 profile: $NIGHTY_BOX64_PROFILE (BIGBLOCK=$BOX64_DYNAREC_BIGBLOCK STRONGMEM=$BOX64_DYNAREC_STRONGMEM SAFEFLAGS=$BOX64_DYNAREC_SAFEFLAGS CALLRET=$BOX64_DYNAREC_CALLRET)"
-      if [ "$BLOCK_LRCLIB" = 1 ] && ! grep -Eq '^[[:space:]]*0\.0\.0\.0[[:space:]]+(api\.)?lrclib\.net([[:space:]]|$)' /etc/hosts 2>/dev/null; then
+      if [ "$BLOCK_LRCLIB" = 1 ] && ! grep -Eq '^[[:space:]]*192\.0\.2\.1[[:space:]]+(api\.)?lrclib\.net([[:space:]]|$)' /etc/hosts 2>/dev/null; then
         log "WARNING: lrclib.net is not blocked; its synchronous lyrics fetch can freeze Discord commands for 10-60s."
         log "Re-run bash scripts/install.sh or add the documented /etc/hosts entries."
+      elif [ "$BLOCK_LRCLIB" = 1 ] && command -v ip >/dev/null 2>&1 \
+           && ! ip route show 192.0.2.1 2>/dev/null | grep -q unreachable; then
+        log "WARNING: the RP-fetch blackhole route is missing; blackholed requests will leave the host and hang until timeout."
+        log "Restore it with:  sudo ip route replace unreachable 192.0.2.1"
       fi
       ;;
   esac
