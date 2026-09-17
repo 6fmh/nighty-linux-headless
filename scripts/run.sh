@@ -16,6 +16,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/scripts/wine_command.sh"
 . "$HERE/scripts/init_service.sh"
+. "$HERE/scripts/backoff.sh"
 
 # ── load .env ────────────────────────────────────────────────────────────────
 . "$HERE/scripts/env_file.sh"
@@ -45,6 +46,9 @@ nighty_load_env_file "$HERE/.env"
 # open WEBUI_PORT. A transient Discord/Cloudflare failure can otherwise leave the
 # loading screen alive forever even though the first-stage watchdog has exited.
 : "${WEBUI_BOOT_TIMEOUT:=180}"
+: "${BACKEND_FAST_FAIL_SECONDS:=60}"
+: "${BACKEND_MAX_BACKOFF:=300}"
+: "${BACKEND_TRIAGE_AFTER:=3}"
 : "${CLEAN_STALE_MEI:=1}"
 : "${NIGHTY_DIAG_DIR:=$HERE/diagnostics}"
 mkdir -p "$NIGHTY_HOME" "$NIGHTY_DIAG_DIR"
@@ -559,7 +563,8 @@ run_stack() {
   # watchdog kills and retries if the stub control server never answers
   # within BOOT_TIMEOUT — some Wine builds stall during first-prefix init
   # with no error, well before Nighty's own code would ever hang or crash.
-  ( while true; do
+  ( fast_failures=0
+    while true; do
       if [ ! -s "$NIGHTY_STUB" ]; then
         if [ -f "$NIGHTY_EXE" ]; then
           log "$NIGHTY_STUB was removed or emptied — regenerating from $NIGHTY_EXE..."
@@ -575,6 +580,7 @@ run_stack() {
       python3 "$HERE/scripts/preflight.py" report --diag-dir "$NIGHTY_DIAG_DIR" --quiet >/dev/null 2>&1 || true
       mkdir -p "$HERE/dist/ws_extensions" "$NIGHTY_HOME/dist/ws_extensions" 2>/dev/null || true
       log "launching backend ($NIGHTY_STUB)…"
+      backend_started=$(date +%s)
       "${NIGHTY_WINE_COMMAND[@]}" "$NIGHTY_STUB" >>"$NIGHTY_DIAG_DIR/backend.log" 2>&1 &
       BACKEND_PID=$!
 
@@ -629,10 +635,30 @@ run_stack() {
 
       wait "$BACKEND_PID" 2>/dev/null || true
       kill "$WATCHDOG_PID" 2>/dev/null || true
-      log "backend exited — relaunching in 3s (persistence)."
+      backend_ended=$(date +%s)
+      backend_ran=$((backend_ended - backend_started))
+      if [ "$backend_ran" -lt "$BACKEND_FAST_FAIL_SECONDS" ]; then
+        fast_failures=$((fast_failures + 1))
+      else
+        fast_failures=0
+      fi
+      relaunch_delay="$(nighty_relaunch_delay "$fast_failures" "$BACKEND_MAX_BACKOFF")"
+      if [ "$fast_failures" -eq "$BACKEND_TRIAGE_AFTER" ]; then
+        log "backend exited after ${backend_ran}s on ${fast_failures} consecutive attempts — it is not starting."
+        echo "[run] === BACKEND LOG TAIL (LAST 25 LINES) ===" >&2
+        tail -n 25 "$NIGHTY_DIAG_DIR/backend.log" 2>/dev/null >&2 || true
+        echo "[run] ==========================================" >&2
+        python3 "$HERE/scripts/preflight.py" triage >&2 2>/dev/null || true
+        log "backing off up to ${BACKEND_MAX_BACKOFF}s between attempts; fix the cause above, then restart."
+      fi
       nighty_stop_wineserver
       cleanup_pyinstaller_temp
-      sleep 3
+      if [ "$fast_failures" -gt 0 ]; then
+        log "backend exited after ${backend_ran}s — relaunching in ${relaunch_delay}s (attempt $((fast_failures + 1)))."
+      else
+        log "backend exited — relaunching in ${relaunch_delay}s (persistence)."
+      fi
+      sleep "$relaunch_delay"
     done ) &
   BACKEND_LOOP_PID=$!
 

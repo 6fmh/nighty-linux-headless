@@ -115,9 +115,9 @@ bash scripts/run.sh
 **The Orchestrator (`run.sh`)** brings up the whole stack (virtual display, config enforcement, LAN bridge, and backend). With no arguments it shows a menu:
 ```text
   1) Run now (one-off, in this terminal)
-  2) Set up autostart (systemd) - starts automatically on every boot
+  2) Set up autostart - starts automatically on every boot
 ```
-Choose **2** and it installs a systemd service for you. You can also skip the menu:
+Choose **2** and it installs a service for you. **systemd**, **OpenRC** and **runit** are supported and detected automatically; set `NIGHTY_INIT_SYSTEM` to force one. If none is found, it prints the manual command instead of failing. You can also skip the menu:
 ```bash
 bash scripts/run.sh once        # run in this terminal
 bash scripts/run.sh autostart   # install + enable the systemd service
@@ -171,6 +171,10 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 | `STUB_PORT` | stub control server (keep loopback) |
 | `DISPLAY_NUM` | Xvfb display number |
 | `ENFORCE_WEBUI`, `ENFORCE_INTERVAL` | Web UI hard-enforcement |
+| `NIGHTY_INIT_SYSTEM` | force `systemd`, `openrc` or `runit` for autostart (empty = detect) |
+| `BACKEND_FAST_FAIL_SECONDS` | a backend exiting sooner than this counts as a failed start (default `60`) |
+| `BACKEND_MAX_BACKOFF` | ceiling for the relaunch backoff after repeated fast exits (default `300`) |
+| `BACKEND_TRIAGE_AFTER` | consecutive fast exits before the log tail and failure triage are printed (default `3`) |
 
 ---
 
