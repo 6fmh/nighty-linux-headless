@@ -9,12 +9,13 @@
 #    • the Nighty backend (Wine, headless) with auto-relaunch
 #
 #  Run it with no arguments and it asks whether to start once or to install
-#  itself as a systemd service (autostart on every boot) — and does the setup
+#  itself as a service (autostart on every boot) — and does the setup
 #  for you. With --run it just starts the stack (this is what the service uses).
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/scripts/wine_command.sh"
+. "$HERE/scripts/init_service.sh"
 
 # ── load .env ────────────────────────────────────────────────────────────────
 . "$HERE/scripts/env_file.sh"
@@ -265,48 +266,16 @@ guard_existing_instance() {
   return 0
 }
 
-# ── autostart (systemd) ──────────────────────────────────────────────────────
-setup_autostart() {
-  if ! command -v systemctl >/dev/null 2>&1; then
-    log "systemd not found on this host — can't set up autostart automatically."
-    log "You can still run it manually:  bash scripts/run.sh"
-    return 1
-  fi
-  local SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-  local unit=/etc/systemd/system/nighty.service
-
+# ── autostart (systemd / OpenRC / runit) ─────────────────────────────────────
+setup_autostart_systemd() {
+  local SUDO="$1" run_user="$2" unit=/etc/systemd/system/nighty.service
   if systemctl is-active --quiet nighty.service 2>/dev/null; then
     report_existing_instance ""
     log "Autostart is already active; no second service was created."
     return 0
   fi
-  if probe_nighty_bridge || [ -n "$(find_existing_runner || true)" ]; then
-    report_existing_instance "$(find_existing_runner || true)"
-    log "Stop the manual instance with Ctrl+C, then run autostart again."
-    return 23
-  fi
-
   log "installing systemd service → $unit"
-  $SUDO tee "$unit" >/dev/null <<EOF
-[Unit]
-Description=Nighty headless (backend + Web UI bridge)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$(id -un)
-WorkingDirectory=$HERE
-ExecStart=/usr/bin/env bash $HERE/scripts/run.sh --run
-Restart=always
-RestartSec=5
-SuccessExitStatus=23
-RestartPreventExitStatus=23
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+  nighty_systemd_unit_text "$run_user" "$HERE" | $SUDO tee "$unit" >/dev/null || return 1
   $SUDO systemctl daemon-reload || { log "daemon-reload failed"; return 1; }
   $SUDO systemctl enable --now nighty.service || { log "enabling service failed"; return 1; }
   echo
@@ -315,6 +284,82 @@ EOF
   echo "    live log: journalctl -u nighty -f"
   echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
   echo "    turn off: sudo systemctl disable --now nighty"
+}
+
+setup_autostart_openrc() {
+  local SUDO="$1" run_user="$2" script=/etc/init.d/nighty
+  if ! command -v supervise-daemon >/dev/null 2>&1; then
+    log "OpenRC is present but supervise-daemon is missing; Nighty would not be restarted after a crash."
+    log "Install a newer OpenRC (>= 0.21) or start it yourself with:  bash scripts/run.sh once"
+    return 1
+  fi
+  log "installing OpenRC service → $script"
+  nighty_openrc_script_text "$run_user" "$HERE" | $SUDO tee "$script" >/dev/null || return 1
+  $SUDO chmod +x "$script" || return 1
+  $SUDO rc-update add nighty default || { log "rc-update add failed"; return 1; }
+  $SUDO rc-service nighty start || { log "starting the service failed"; return 1; }
+  echo
+  log "Autostart is ON — Nighty now starts on every boot and is running already."
+  echo "    status:   rc-service nighty status"
+  echo "    live log: tail -f $NIGHTY_DIAG_DIR/service.log"
+  echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
+  echo "    turn off: sudo rc-update del nighty default && sudo rc-service nighty stop"
+}
+
+setup_autostart_runit() {
+  local SUDO="$1" run_user="$2" svdir=/etc/sv/nighty link_dir="" candidate=""
+  for candidate in /var/service /etc/service /etc/runit/runsvdir/default; do
+    [ -d "$candidate" ] && { link_dir="$candidate"; break; }
+  done
+  if [ -z "$link_dir" ]; then
+    log "runit is present but no service directory was found (/var/service, /etc/service, /etc/runit/runsvdir/default)."
+    return 1
+  fi
+  log "installing runit service → $svdir"
+  $SUDO mkdir -p "$svdir/log" || return 1
+  nighty_runit_run_text "$run_user" "$HERE" | $SUDO tee "$svdir/run" >/dev/null || return 1
+  nighty_runit_log_run_text "$HERE" | $SUDO tee "$svdir/log/run" >/dev/null || return 1
+  $SUDO chmod +x "$svdir/run" "$svdir/log/run" || return 1
+  mkdir -p "$NIGHTY_DIAG_DIR/svlog" 2>/dev/null || true
+  $SUDO ln -sfn "$svdir" "$link_dir/nighty" || { log "linking the service failed"; return 1; }
+  echo
+  log "Autostart is ON — runsvdir starts Nighty on every boot (it can take a few seconds to appear)."
+  echo "    status:   sv status nighty"
+  echo "    live log: tail -f $NIGHTY_DIAG_DIR/svlog/current"
+  echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
+  echo "    turn off: sudo rm $link_dir/nighty"
+}
+
+setup_autostart_manual() {
+  log "No supported init system was detected (looked for systemd, OpenRC and runit)."
+  log "Force one with NIGHTY_INIT_SYSTEM=systemd|openrc|runit, or start Nighty yourself:"
+  echo
+  echo "    bash $HERE/scripts/run.sh once"
+  echo
+  log "To survive a reboot without an init system, add that command to your own supervisor,"
+  log "a container restart policy, or an @reboot crontab entry."
+  return 1
+}
+
+setup_autostart() {
+  local init_system SUDO="" run_user
+  init_system="$(nighty_detect_init_system)"
+  run_user="$(id -un)"
+  [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+  if probe_nighty_bridge || [ -n "$(find_existing_runner || true)" ]; then
+    report_existing_instance "$(find_existing_runner || true)"
+    log "Stop the manual instance with Ctrl+C, then run autostart again."
+    return 23
+  fi
+
+  log "init system: $init_system"
+  case "$init_system" in
+    systemd) setup_autostart_systemd "$SUDO" "$run_user" ;;
+    openrc)  setup_autostart_openrc  "$SUDO" "$run_user" ;;
+    runit)   setup_autostart_runit   "$SUDO" "$run_user" ;;
+    *)       setup_autostart_manual ;;
+  esac
 }
 
 # ── the stack ────────────────────────────────────────────────────────────────
@@ -601,9 +646,10 @@ Usage: bash scripts/run.sh [COMMAND]
 
 Commands:
   once        Start the whole stack now, in this terminal (Ctrl+C to stop).
-  autostart   Install + enable a systemd service so it starts on every boot.
+  autostart   Install + enable a service so it starts on every boot
+              (systemd, OpenRC or runit - detected automatically).
   diag        Show environment and network diagnostics.
-  --run       Same as 'once' (this is what the systemd service uses).
+  --run       Same as 'once' (this is what the installed service uses).
   help        Show this help.
 
 With no command it shows an interactive menu. Tip: when using the menu, do NOT
@@ -633,7 +679,7 @@ trap '' TTIN
 echo
 echo "  Nighty headless — how do you want to run it?"
 echo "    1) Run now (one-off, in this terminal — Ctrl+C stops it)"
-echo "    2) Set up autostart (systemd) — starts automatically on every boot"
+echo "    2) Set up autostart (systemd/OpenRC/runit) — starts automatically on every boot"
 echo
 printf "  Choice [1/2] (Enter = 1): "
 if ! read -r choice; then

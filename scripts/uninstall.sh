@@ -83,6 +83,24 @@ full_uninstall() {
     ok "service stopped, disabled and removed"
   fi
 
+  if [ -f /etc/init.d/nighty ]; then
+    info "Removing OpenRC service…"
+    need rc-service && $SUDO rc-service nighty stop >/dev/null 2>&1 || true
+    need rc-update && $SUDO rc-update del nighty default >/dev/null 2>&1 || true
+    $SUDO rm -f /etc/init.d/nighty
+    ok "OpenRC service stopped, disabled and removed"
+  fi
+
+  if [ -d /etc/sv/nighty ]; then
+    info "Removing runit service…"
+    need sv && $SUDO sv down nighty >/dev/null 2>&1 || true
+    for link_dir in /var/service /etc/service /etc/runit/runsvdir/default; do
+      [ -L "$link_dir/nighty" ] && $SUDO rm -f "$link_dir/nighty"
+    done
+    $SUDO rm -rf /etc/sv/nighty
+    ok "runit service stopped, unlinked and removed"
+  fi
+
   info "Stopping any running processes…"; stop_stack; sleep 2; ok "processes stopped"
 
   info "Deleting all data…"
