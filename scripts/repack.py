@@ -21,7 +21,38 @@ Env:
     NIGHTY_STUB_PORT   control-server port inside the stub (default 8765)
     NIGHTY_STUB_LOG    optional wine path for the stub log (e.g. Z:\\tmp\\stub.log)
 """
-import struct, marshal, zlib, sys, os
+import struct, marshal, zlib, sys, os, errno
+
+BIND_MOUNT_ERRNOS = (errno.EBUSY, errno.EXDEV)
+
+
+def write_output(path, payload):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.replace(tmp_path, path)
+        return "atomic"
+    except OSError as exc:
+        if exc.errno not in BIND_MOUNT_ERRNOS:
+            raise
+    with open(path, "r+b") as fh:
+        fh.write(payload)
+        fh.truncate(len(payload))
+        fh.flush()
+        os.fsync(fh.fileno())
+    written = os.path.getsize(path)
+    if written != len(payload):
+        sys.exit("ERROR: in-place write of %s is %d bytes, expected %d — %s kept for recovery."
+                 % (path, written, len(payload), tmp_path))
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    return "in-place (target is a bind mount)"
+
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("NIGHTY_EXE", "Nighty.exe")
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("NIGHTY_STUB", "Nighty_stub.exe")
@@ -333,13 +364,8 @@ def main():
     missing = sorted(set(REPLACE_SRC) - {n for n, _, _ in replaced})
     if missing:
         sys.exit("ERROR: no PYZ entry matched %s — refusing to write a stub that still needs a GUI." % missing)
-    tmp_out = OUT + ".tmp"
-    with open(tmp_out, "wb") as fh:
-        fh.write(out)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp_out, OUT)
-    print("wrote %s : %d bytes (orig %d)" % (OUT, len(out), total))
+    how = write_output(OUT, out)
+    print("wrote %s : %d bytes (orig %d, %s)" % (OUT, len(out), total, how))
 
 if __name__ == "__main__":
     main()
