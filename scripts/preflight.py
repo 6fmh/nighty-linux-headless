@@ -428,7 +428,7 @@ def generate_report(diag_dir: Optional[Path] = None, outfile: Optional[Path] = N
         lines.append("  (No critical errors or tracebacks detected in recent log tails)")
     lines.append("")
     lines.append("=" * 80)
-    lines.append("END OF REPORT - Everything in this folder can be safely attached to support tickets.")
+    lines.append("END OF REPORT - This file is redacted and safe to attach. The raw logs beside it are NOT: check them for tokens first.")
     lines.append("=" * 80)
 
     report_content = "\n".join(lines) + "\n"
