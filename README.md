@@ -2,7 +2,7 @@
 
 **Run Nighty headless on Linux and access its built-in Web UI effortlessly over your LAN** — even without a desktop environment! 
 
-It natively repackages Nighty to run perfectly on Linux servers. On **x86-64**, Nighty runs natively under Wine. On **ARM64** (like Raspberry Pi), it runs flawlessly through an x86-64 emulator (Box64) under Wine. 
+It repackages Nighty to run on Linux servers. On **x86-64**, Nighty runs under Wine, which translates its Windows API calls into native POSIX ones. On **ARM64** (like Raspberry Pi), it additionally runs through an x86-64 emulator (Box64) under Wine. 
 
 > [!WARNING]
 > **Disclaimer:** This is an unofficial, community interop/automation tool. It is **not** affiliated with or endorsed by Nighty. It does **not** include, redistribute, crack, or unlicense Nighty — you must supply your own legally obtained copy and valid license. Nighty is a Discord **selfbot**; automating a user account can violate Discord's Terms of Service. Use it only with your own account, on your own hardware, at your own risk.
@@ -115,9 +115,9 @@ bash scripts/run.sh
 **The Orchestrator (`run.sh`)** brings up the whole stack (virtual display, config enforcement, LAN bridge, and backend). With no arguments it shows a menu:
 ```text
   1) Run now (one-off, in this terminal)
-  2) Set up autostart (systemd) - starts automatically on every boot
+  2) Set up autostart - starts automatically on every boot
 ```
-Choose **2** and it installs a systemd service for you. You can also skip the menu:
+Choose **2** and it installs a service for you. **systemd**, **OpenRC** and **runit** are supported and detected automatically; set `NIGHTY_INIT_SYSTEM` to force one. If none is found, it prints the manual command instead of failing. You can also skip the menu:
 ```bash
 bash scripts/run.sh once        # run in this terminal
 bash scripts/run.sh autostart   # install + enable the systemd service
@@ -171,6 +171,10 @@ All settings live in `.env` (copy from `.env.example`). Key ones:
 | `STUB_PORT` | stub control server (keep loopback) |
 | `DISPLAY_NUM` | Xvfb display number |
 | `ENFORCE_WEBUI`, `ENFORCE_INTERVAL` | Web UI hard-enforcement |
+| `NIGHTY_INIT_SYSTEM` | force `systemd`, `openrc` or `runit` for autostart (empty = detect) |
+| `BACKEND_FAST_FAIL_SECONDS` | a backend exiting sooner than this counts as a failed start (default `60`) |
+| `BACKEND_MAX_BACKOFF` | ceiling for the relaunch backoff after repeated fast exits (default `300`) |
+| `BACKEND_TRIAGE_AFTER` | consecutive fast exits before the log tail and failure triage are printed (default `3`) |
 
 ---
 
@@ -213,14 +217,17 @@ Select the **Reset configuration** option matching your deployment method to saf
 
 ### 📂 Easy Diagnostics & Log Sharing
 
-All diagnostic logs and auto-generated system summaries are continuously collected and rotated directly in the **`diagnostics/`** directory in the project root:
+All diagnostic logs and auto-generated system summaries are collected in the **`diagnostics/`** directory in the project root. The wrapper's own logs are rotated at 10 MB (keeping `.1`–`.3` backups); Nighty's `nighty.log` is mirrored here but never rewritten in place, because the backend holds it open:
 - **`system_info.txt`** — Complete sanitized environment, memory, disk, network, and crash signature report.
 - **`backend.log`** — Wine, emulator, and backend execution stream.
 - **`nighty.log`** — Nighty bot internal Discord engine and command logs.
 - **`bridge.log`** — Web UI bridge & proxy log.
 - **`guard.log` & `xvfb.log`** — Configuration guard and virtual display logs.
 
-If you ever encounter an issue or need help, simply share the files from your **`diagnostics/`** folder — all private tokens and passwords are automatically redacted.
+If you ever encounter an issue or need help, share the files from your **`diagnostics/`** folder.
+
+> [!CAUTION]
+> Only `system_info.txt` is redacted. The raw logs (`backend.log`, `nighty.log`, `bridge.log`, `guard.log`, `xvfb.log`) are written verbatim by Nighty, Wine and the bridge, and **may contain your Discord token, license key or Web UI password**. Review them before posting them anywhere public, or share `system_info.txt` alone.
 
 > [!TIP]
 > **"Nighty is already running"**

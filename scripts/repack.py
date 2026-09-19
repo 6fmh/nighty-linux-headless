@@ -21,7 +21,38 @@ Env:
     NIGHTY_STUB_PORT   control-server port inside the stub (default 8765)
     NIGHTY_STUB_LOG    optional wine path for the stub log (e.g. Z:\\tmp\\stub.log)
 """
-import struct, marshal, zlib, sys, os
+import struct, marshal, zlib, sys, os, errno
+
+BIND_MOUNT_ERRNOS = (errno.EBUSY, errno.EXDEV)
+
+
+def write_output(path, payload):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    try:
+        os.replace(tmp_path, path)
+        return "atomic"
+    except OSError as exc:
+        if exc.errno not in BIND_MOUNT_ERRNOS:
+            raise
+    with open(path, "r+b") as fh:
+        fh.write(payload)
+        fh.truncate(len(payload))
+        fh.flush()
+        os.fsync(fh.fileno())
+    written = os.path.getsize(path)
+    if written != len(payload):
+        sys.exit("ERROR: in-place write of %s is %d bytes, expected %d — %s kept for recovery."
+                 % (path, written, len(payload), tmp_path))
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    return "in-place (target is a bind mount)"
+
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("NIGHTY_EXE", "Nighty.exe")
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("NIGHTY_STUB", "Nighty_stub.exe")
@@ -252,6 +283,8 @@ def compile_blob(name, src):
 def main():
     if not os.path.isfile(SRC):
         sys.exit("ERROR: source binary not found: %s (drop your Nighty.exe there)" % SRC)
+    if os.path.abspath(OUT) == os.path.abspath(SRC):
+        sys.exit("ERROR: output path must differ from the source path (%s) — refusing to overwrite your licensed binary." % SRC)
     if sys.version_info[:2] != (3, 8):
         print("WARNING: not running under Python 3.8 (got %d.%d). The marshal format"
               " must match the frozen runtime; use the uv-provided 3.8 interpreter."
@@ -271,10 +304,14 @@ def main():
     off = 0
     while off < len(toc):
         elen, epos, dlen, ulen, cflag, tc = ENTRY.unpack_from(toc, off)
+        if elen < ENTRY.size or off + elen > len(toc):
+            sys.exit("ERROR: corrupt CArchive TOC entry at offset %d (elen=%d) — is this a Nighty one-file exe?" % (off, elen))
         name = toc[off+ENTRY.size:off+elen].rstrip(b'\0').decode('utf-8','replace')
         entries.append([name, tc, cflag, epos, dlen, ulen])
         off += elen
-    pyz = next(e for e in entries if e[1] == b'z')
+    pyz = next((e for e in entries if e[1] == b'z'), None)
+    if pyz is None:
+        sys.exit("ERROR: no PYZ entry found in the CArchive — is this a Nighty one-file exe?")
     praw = data[ps+pyz[3]:ps+pyz[3]+pyz[4]]
     assert praw[:4] == b'PYZ\0'
     pymagic = praw[4:8]
@@ -324,8 +361,11 @@ def main():
     assert len(cookie) == 88
     newpkg += tocbuf + cookie
     out = data[:ps] + bytes(newpkg)
-    open(OUT, "wb").write(out)
-    print("wrote %s : %d bytes (orig %d)" % (OUT, len(out), total))
+    missing = sorted(set(REPLACE_SRC) - {n for n, _, _ in replaced})
+    if missing:
+        sys.exit("ERROR: no PYZ entry matched %s — refusing to write a stub that still needs a GUI." % missing)
+    how = write_output(OUT, out)
+    print("wrote %s : %d bytes (orig %d, %s)" % (OUT, len(out), total, how))
 
 if __name__ == "__main__":
     main()
