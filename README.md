@@ -211,6 +211,37 @@ Select the **Reset configuration** option matching your deployment method to saf
 - The LAN bridge has no transport encryption — run it only on a trusted LAN, or put it behind a VPN for remote access.
 - Your `.env` (credentials) and Wine prefix (tokens) are git-ignored. Never commit them!
 
+### Bridge authentication
+
+When `BRIDGE_HOST` is **not** loopback, the bridge requires HTTP Basic auth using
+your existing `WEBUI_USERNAME` / `WEBUI_PASSWORD` before it serves or proxies
+anything. Loopback clients (the Docker healthcheck, `run.sh`'s own probes) are
+exempt, so nothing internal changes.
+
+| `BRIDGE_AUTH` | Behaviour |
+| --- | --- |
+| `auto` (default) | Require auth only when `BRIDGE_HOST` is not loopback |
+| `on` | Always require auth |
+| `off` | Never require auth |
+
+If the bind is network-facing and `WEBUI_PASSWORD` is still a known default
+(or empty), the bridge generates a strong password, writes it to `.env` with
+`0600` permissions, and prints it once at startup — visible with
+`journalctl -u nighty`. Nothing is silently left unprotected.
+
+What is reachable **without** credentials on a network-facing bind:
+
+- `GET /healthz` and `GET /ready` return only `{"status": ..., "ready": ...}`.
+  Backend mode, uptime and timestamps go to authenticated or loopback clients
+  only, so the endpoint stays usable as a health probe without telling a scanner
+  when onboarding is open.
+
+Everything else — the panel, the setup wizard, `/state`, and the socket.io
+WebSocket upgrade — returns `401` until you authenticate. `/state` never exposes
+the event stream, current URL or Discord application id to a remote client, and
+`/events` is loopback-only. WebSocket upgrades are restricted to `/socket.io`
+and `/ws` paths.
+
 ---
 
 ## Troubleshooting

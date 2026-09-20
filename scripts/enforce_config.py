@@ -502,6 +502,8 @@ def _mirror_continues_source(src, dst, mirror_size):
 def _mirror_appended_tail(src, dst):
     source_size = os.path.getsize(src)
     mirror_size = os.path.getsize(dst) if os.path.exists(dst) else 0
+    if mirror_size and source_size == mirror_size:
+        return
     source_was_truncated = source_size < mirror_size
     if source_was_truncated or not _mirror_continues_source(src, dst, mirror_size):
         shutil.copyfile(src, dst)
