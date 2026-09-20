@@ -56,6 +56,17 @@ class EventBufferTests(unittest.TestCase):
             mod._emit("load_url", uid="w", url="u%d" % i)
         self.assertEqual([e["seq"] for e in mod._events], list(range(10)))
 
+    def test_non_numeric_cap_falls_back_to_default(self):
+        # A typo'd env value must not crash the stub import; it falls back to 2000.
+        mod = load_stub(event_cap="not-a-number")
+        self.assertEqual(mod._EV_CAP, 2000)
+
+    def test_negative_cap_falls_back_to_default(self):
+        # A negative cap would read as "unbounded" (the opposite of intent);
+        # it must fall back to the default instead.
+        mod = load_stub(event_cap="-5")
+        self.assertEqual(mod._EV_CAP, 2000)
+
 
 class LogDedupeTests(unittest.TestCase):
     def setUp(self):

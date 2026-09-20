@@ -49,7 +49,12 @@ def bind_is_public():
 
 
 def client_is_loopback(addr):
-    return addr == "::1" or addr == "::ffff:127.0.0.1" or addr.startswith("127.")
+    # Matches the raw TCP peer only (never X-Forwarded-For), so this can't be
+    # spoofed by a header. Covers dotted-quad 127/8 and both the IPv4-mapped
+    # IPv6 form (::ffff:127.x.x.x) and ::1.
+    return (addr == "::1"
+            or addr.startswith("127.")
+            or addr.startswith("::ffff:127."))
 
 
 def auth_enabled():
@@ -85,9 +90,16 @@ def persist_generated_password(value):
         if not replaced:
             out.append("WEBUI_PASSWORD=" + value)
         tmp = path + ".tmp"
-        with io.open(tmp, "w", encoding="utf-8") as fh:
+        # Create the temp file 0600 from the outset. Creating it with the
+        # process umask (typically 0644) and chmod-ing afterward would leave the
+        # plaintext password world-readable for the intervening window.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with io.open(fd, "w", encoding="utf-8") as fh:
             fh.write("\n".join(out) + "\n")
-        os.chmod(tmp, 0o600)
+        try:
+            os.chmod(tmp, 0o600)  # no-op if O_CREAT mode already applied; harmless
+        except OSError:
+            pass
         os.replace(tmp, path)
         return True
     except Exception:
@@ -1261,10 +1273,20 @@ class H(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
 
+    def version_string(self):
+        # server_version + " " + sys_version; with sys_version="" the base
+        # class emits a trailing space ("nighty-bridge "). Return the clean name.
+        return self.server_version
+
     def _send_status(self, code, body=b""):
+        # These are all reject/short-circuit responses that may not have read the
+        # request body (401/400/413/403). Under HTTP/1.1 keep-alive an unread body
+        # would desync the next request on the connection, so close it.
+        self.close_connection = True
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self._security_headers()
         self.end_headers()
         try:
@@ -1288,17 +1310,30 @@ class H(BaseHTTPRequestHandler):
             return False
         try:
             raw = base64.b64decode(hdr[6:].strip()).decode("utf-8", "replace")
+            user, _, pw = raw.partition(":")
+            # Compare on both fields with no short-circuit: `and` would skip the
+            # password check on a username miss and leak, via timing, whether the
+            # username was right. `&` forces both compare_digest calls to run.
+            # Kept inside the try so a non-ASCII credential (TypeError) fails
+            # closed to 401 instead of raising out of the auth gate.
+            ok_user = hmac.compare_digest(user, AUTH_USER)
+            ok_pass = hmac.compare_digest(pw, AUTH_PASS)
+            return bool(ok_user & ok_pass)
         except Exception:
             return False
-        user, _, pw = raw.partition(":")
-        return hmac.compare_digest(user, AUTH_USER) and hmac.compare_digest(pw, AUTH_PASS)
 
     def demand_auth(self):
         body = b"authentication required"
+        # A 401 on a POST is answered before the request body is read; under
+        # HTTP/1.1 keep-alive the unread body would desync the next request
+        # (and corrupt the client's authenticated retry on the same socket).
+        # Close so the retry opens a fresh connection.
+        self.close_connection = True
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="%s", charset="UTF-8"' % AUTH_REALM)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self._security_headers()
         self.end_headers()
         try:
@@ -1407,7 +1442,7 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            health_path = self.path.startswith(("/healthz", "/ready"))
+            health_path = self.path in ("/healthz", "/ready") or self.path.startswith(("/healthz?", "/ready?"))
             if not health_path and not self.authorized():
                 return self.demand_auth()
             api_path = self.path.startswith(("/state", "/events", "/ready", "/healthz"))

@@ -81,6 +81,10 @@ def _logemit(line):
         except Exception: pass
 def _log(*a):
     msg = "[STUBWV] " + " ".join(str(x) for x in a)
+    # Hold the lock across the emit too: the stub is heavily multi-threaded
+    # (ctl handlers, async workers), so releasing before writing would let two
+    # threads interleave lines and misattribute the "repeated N times" summary,
+    # and would race two opens of the log file handle.
     with _loglock:
         if msg == _logstate["last"]:
             _logstate["repeats"] += 1
@@ -88,9 +92,9 @@ def _log(*a):
         repeated = _logstate["repeats"]
         _logstate["last"] = msg
         _logstate["repeats"] = 0
-    if repeated:
-        _logemit("[STUBWV] (previous line repeated %d more times)" % repeated)
-    _logemit(msg)
+        if repeated:
+            _logemit("[STUBWV] (previous line repeated %d more times)" % repeated)
+        _logemit(msg)
 
 class WebViewException(Exception): pass
 class JavascriptException(Exception): pass
@@ -99,7 +103,12 @@ token = "stub-token"
 windows = []
 settings = {'ALLOW_DOWNLOADS': False,'ALLOW_FILE_URLS': True,'OPEN_EXTERNAL_LINKS_IN_BROWSER': True,'OPEN_DEVTOOLS_IN_DEBUG': False,'REMOTE_DEBUGGING_PORT': None}
 _JS_API = []
-_EV_CAP = int(os.environ.get("NIGHTY_STUB_EVENT_CAP", "2000") or "2000")
+try:
+    _EV_CAP = int(os.environ.get("NIGHTY_STUB_EVENT_CAP", "2000") or "2000")
+except ValueError:
+    _EV_CAP = 2000  # a typo'd value must not crash stub import
+if _EV_CAP < 0:
+    _EV_CAP = 2000  # negatives would read as "unbounded"; fall back to the default
 _events = []
 _evbase = 0
 _evlock = threading.Lock()

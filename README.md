@@ -218,6 +218,14 @@ your existing `WEBUI_USERNAME` / `WEBUI_PASSWORD` before it serves or proxies
 anything. Loopback clients (the Docker healthcheck, `run.sh`'s own probes) are
 exempt, so nothing internal changes.
 
+> [!IMPORTANT]
+> The loopback exemption is keyed on the real TCP peer address, so it cannot be
+> spoofed with a header. But if you front the bridge with a **same-host reverse
+> proxy** (e.g. the bundled `Caddyfile.example`), every proxied request arrives
+> from `127.0.0.1` and is treated as loopback — the bridge's own auth is then
+> bypassed. In that setup, terminate authentication **at the proxy** (Caddy
+> `basicauth`, or set `BRIDGE_AUTH=on` and have the proxy forward credentials).
+
 | `BRIDGE_AUTH` | Behaviour |
 | --- | --- |
 | `auto` (default) | Require auth only when `BRIDGE_HOST` is not loopback |

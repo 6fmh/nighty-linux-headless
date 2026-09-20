@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -5,6 +6,13 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+
+# Importing bridge runs its module top level. With a default environment
+# (BRIDGE_AUTH=auto, HOST=0.0.0.0, empty WEBUI_PASSWORD) that would call
+# resolve_credentials() at import time — printing a credential banner and
+# rewriting any real .env at the repo root. Force auth off for the import so the
+# test suite has no side effects; the tests patch BRIDGE_AUTH/AUTH_* per case.
+os.environ.setdefault("BRIDGE_AUTH", "off")
 
 import bridge  # noqa: E402
 
@@ -172,6 +180,90 @@ class HandlerHardeningTests(unittest.TestCase):
 
     def test_server_banner_does_not_leak_python_version(self):
         self.assertEqual(bridge.H.sys_version, "")
+
+    def test_version_string_has_no_trailing_space(self):
+        h = bridge.H.__new__(bridge.H)
+        vs = h.version_string()
+        self.assertEqual(vs, "nighty-bridge")
+        self.assertNotIn(" ", vs)
+
+
+def _handler_with_sink(path="/", headers=None, client="203.0.113.9"):
+    """A handler wired to an in-memory wfile so response-writing methods run."""
+    import io as _io
+    h = make_handler(path=path, headers=headers, client=client)
+    h.wfile = _io.BytesIO()
+    h._headers_buffer = []
+    h.close_connection = False
+    return h
+
+
+class KeepAliveDesyncTests(unittest.TestCase):
+    """Regression: a reject response that never reads the request body must close
+    the connection, or the unread body desyncs the next keep-alive request."""
+
+    def test_demand_auth_closes_connection(self):
+        h = _handler_with_sink()
+        h.demand_auth()
+        self.assertTrue(h.close_connection)
+        self.assertIn(b"Connection: close", h.wfile.getvalue())
+        self.assertIn(b"401", h.wfile.getvalue())
+
+    def test_send_status_closes_connection(self):
+        for code in (400, 403, 413):
+            h = _handler_with_sink()
+            h._send_status(code)
+            self.assertTrue(h.close_connection, "code %d must close" % code)
+            self.assertIn(b"Connection: close", h.wfile.getvalue())
+
+
+class AuthFailClosedTests(unittest.TestCase):
+    def setUp(self):
+        self.patches = [
+            patch.object(bridge, "BRIDGE_AUTH", "on"),
+            patch.object(bridge, "AUTH_USER", "operator"),
+            patch.object(bridge, "AUTH_PASS", "s3cret-value"),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_non_ascii_credentials_fail_closed(self):
+        # A base64 body that decodes to bytes with a non-ASCII replacement char
+        # must return False, never raise out of the auth gate.
+        import base64 as _b64
+        raw = _b64.b64encode(b"\xff\xfe:pw").decode("ascii")
+        h = make_handler(headers={"Authorization": "Basic " + raw})
+        self.assertFalse(h.authorized())
+
+    def test_wrong_username_still_checks_password(self):
+        # No short-circuit: both comparisons run regardless of the username.
+        h = make_handler(headers=basic_header("wronguser", "s3cret-value"))
+        self.assertFalse(h.authorized())
+
+
+class HealthPathAuthSkipTests(unittest.TestCase):
+    def test_exact_health_paths_recognized(self):
+        for p in ("/healthz", "/ready", "/healthz?probe=1", "/ready?x=1"):
+            self.assertTrue(
+                p in ("/healthz", "/ready") or p.startswith(("/healthz?", "/ready?")))
+
+    def test_lookalike_paths_do_not_skip_auth(self):
+        for p in ("/healthzfoo", "/ready-status", "/ready/../state", "/healthz/x"):
+            self.assertFalse(
+                p in ("/healthz", "/ready") or p.startswith(("/healthz?", "/ready?")))
+
+
+class LoopbackMappedTests(unittest.TestCase):
+    def test_ipv4_mapped_loopback_range_is_local(self):
+        self.assertTrue(bridge.client_is_loopback("::ffff:127.0.0.1"))
+        self.assertTrue(bridge.client_is_loopback("::ffff:127.9.9.9"))
+
+    def test_mapped_public_is_not_local(self):
+        self.assertFalse(bridge.client_is_loopback("::ffff:203.0.113.9"))
 
 
 if __name__ == "__main__":
